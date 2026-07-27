@@ -19,8 +19,9 @@ COOKIE_FILE = os.getenv("COOKIE_FILE", "/app/cookies.txt")
 async def get_cookies():
     """Lấy cookie YouTube bằng Playwright"""
     async with async_playwright() as p:
+        # CHẠY HEADLESS (không cần X Server)
         browser = await p.chromium.launch(
-            headless=False,
+            headless=True,
             args=['--no-sandbox', '--disable-setuid-sandbox']
         )
         try:
@@ -82,7 +83,7 @@ def health():
 
 @app.route('/run_container', methods=['POST'])
 def run():
-    loop = asyncio.new_event_loop()
+    loop = asyncio.new_event loop()
     asyncio.set_event_loop(loop)
     result = loop.run_until_complete(get_cookies())
     loop.close()
