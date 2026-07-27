@@ -83,7 +83,7 @@ def health():
 
 @app.route('/run_container', methods=['POST'])
 def run():
-    loop = asyncio.new_event loop()
+    loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     result = loop.run_until_complete(get_cookies())
     loop.close()
