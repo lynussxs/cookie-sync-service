@@ -15,13 +15,14 @@ dotenv.load_dotenv()
 EMAIL = os.getenv("EMAIL")
 PASSWORD = os.getenv("PASSWORD")
 COOKIE_FILE = os.getenv("COOKIE_FILE", "/app/cookies.txt")
+PROXY_URL = os.getenv("PROXY_URL")  # Lấy proxy từ env
 
 
 async def get_cookies() -> dict:
-    """Lấy cookie YouTube bằng Playwright."""
     logger.info("🚀 Bắt đầu lấy cookie")
     logger.info(f"📧 EMAIL: {EMAIL}")
     logger.info(f"📁 COOKIE_FILE: {COOKIE_FILE}")
+    logger.info(f"🔗 PROXY_URL: {PROXY_URL}")
     
     browser = None
     page = None
@@ -36,42 +37,46 @@ async def get_cookies() -> dict:
                     "--disable-dev-shm-usage",
                 ],
             )
-            context = await browser.new_context(
-                user_agent=(
-                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                    "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-                ),
-                viewport={"width": 1920, "height": 1080},
-                locale="en-US",
-            )
+            
+            # ── TẠO CONTEXT VỚI PROXY ──
+            context_kwargs = {
+                "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                "viewport": {"width": 1920, "height": 1080},
+                "locale": "en-US",
+            }
+            if PROXY_URL:
+                context_kwargs["proxy"] = {"server": PROXY_URL}
+                logger.info("✅ Đã cấu hình proxy")
+            
+            context = await browser.new_context(**context_kwargs)
             await context.add_init_script(
                 "Object.defineProperty(navigator, 'webdriver', {get: () => undefined});"
             )
             page = await context.new_page()
 
             if not EMAIL or not PASSWORD:
-                return {"status": "error", "message": "Thiếu EMAIL hoặc PASSWORD trong env vars"}
+                return {"status": "error", "message": "Thiếu EMAIL hoặc PASSWORD"}
 
             logger.info("📤 Đang truy cập YouTube...")
             await page.goto("https://www.youtube.com/", wait_until="networkidle", timeout=30000)
             await page.wait_for_timeout(1500)
 
             # Nút "Sign in"
-            signed_in_button_found = False
+            signed_in = False
             for sel in ('text="Sign in"', 'a[aria-label="Sign in"]', 'a[href*="accounts.google.com"]'):
                 try:
                     await page.click(sel, timeout=5000)
-                    signed_in_button_found = True
-                    logger.info(f"✅ Đã click Sign in với selector: {sel}")
+                    signed_in = True
+                    logger.info(f"✅ Đã click Sign in: {sel}")
                     break
-                except Exception:
+                except:
                     continue
-            if not signed_in_button_found:
-                logger.warning("⚠️ Không tìm thấy nút Sign in, chuyển sang accounts.google.com")
+            if not signed_in:
+                logger.warning("⚠️ Chuyển sang accounts.google.com")
                 await page.goto("https://accounts.google.com/login", timeout=30000)
             await page.wait_for_timeout(1500)
 
-            # Nhập email - nhiều selector
+            # Nhập email
             logger.info("📧 Đang nhập email...")
             email_selectors = [
                 'input[type="email"]',
@@ -86,7 +91,7 @@ async def get_cookies() -> dict:
                     await page.wait_for_selector(sel, timeout=3000)
                     await page.fill(sel, EMAIL)
                     email_found = True
-                    logger.info(f"✅ Đã nhập email với selector: {sel}")
+                    logger.info(f"✅ Đã nhập email: {sel}")
                     break
                 except:
                     continue
@@ -96,13 +101,13 @@ async def get_cookies() -> dict:
             for sel in ('text="Next"', "#identifierNext"):
                 try:
                     await page.click(sel, timeout=5000)
-                    logger.info(f"✅ Đã click Next email với selector: {sel}")
+                    logger.info(f"✅ Đã click Next email: {sel}")
                     break
-                except Exception:
+                except:
                     continue
             await page.wait_for_timeout(2000)
 
-            # Nhập password - nhiều selector
+            # Nhập password
             logger.info("🔑 Đang nhập password...")
             pwd_selectors = [
                 'input[type="password"]',
@@ -115,7 +120,7 @@ async def get_cookies() -> dict:
                     await page.wait_for_selector(sel, timeout=3000)
                     await page.fill(sel, PASSWORD)
                     pwd_found = True
-                    logger.info(f"✅ Đã nhập password với selector: {sel}")
+                    logger.info(f"✅ Đã nhập password: {sel}")
                     break
                 except:
                     continue
@@ -125,20 +130,19 @@ async def get_cookies() -> dict:
             for sel in ('text="Next"', "#passwordNext"):
                 try:
                     await page.click(sel, timeout=5000)
-                    logger.info(f"✅ Đã click Next password với selector: {sel}")
+                    logger.info(f"✅ Đã click Next password: {sel}")
                     break
-                except Exception:
+                except:
                     continue
 
-            logger.info("⏳ Chờ đăng nhập...")
             await page.wait_for_timeout(5000)
 
-            # Phát hiện 2FA/CAPTCHA
+            # Kiểm tra 2FA/CAPTCHA
             current_url = page.url
             page_text = ""
             try:
                 page_text = (await page.content())[:3000].lower()
-            except Exception:
+            except:
                 pass
             verification_signals = [
                 "accounts.google.com/signin/v2/challenge",
@@ -149,18 +153,14 @@ async def get_cookies() -> dict:
                 "captcha",
             ]
             if any(sig in current_url.lower() or sig in page_text for sig in verification_signals):
-                logger.warning("⚠️ Google yêu cầu xác minh bổ sung (2FA/CAPTCHA)")
-                return {
-                    "status": "error",
-                    "message": "Google yêu cầu xác minh bổ sung (2FA/CAPTCHA/unusual activity)"
-                }
+                logger.warning("⚠️ Google yêu cầu xác minh bổ sung")
+                return {"status": "error", "message": "Google yêu cầu xác minh bổ sung (2FA/CAPTCHA)"}
 
             # Xử lý popup
             for sel in ('text="I agree"', 'text="Accept all"'):
                 try:
                     await page.click(sel, timeout=3000)
-                    logger.info(f"✅ Đã click popup: {sel}")
-                except Exception:
+                except:
                     pass
 
             await page.goto("https://www.youtube.com/", wait_until="networkidle", timeout=30000)
@@ -169,14 +169,13 @@ async def get_cookies() -> dict:
             # Lấy cookie
             cookies = await context.cookies()
             logger.info(f"🍪 Lấy được {len(cookies)} cookies")
-            
+
             if not cookies:
                 return {"status": "error", "message": "Không lấy được cookie nào"}
 
-            # Kiểm tra cookie đăng nhập
             cookie_names = {c.get("name", "") for c in cookies}
             if not ({"SID", "SAPISID", "__Secure-3PSID"} & cookie_names):
-                logger.warning("⚠️ Không thấy cookie đăng nhập (SID/SAPISID)")
+                logger.warning("⚠️ Không thấy cookie đăng nhập")
 
             netscape = "# Netscape HTTP Cookie File\n"
             for c in cookies:
@@ -200,15 +199,15 @@ async def get_cookies() -> dict:
         if page is not None:
             try:
                 await page.screenshot(path="/tmp/cookie_sync_error.png")
-                logger.info("📸 Đã lưu screenshot lỗi tại /tmp/cookie_sync_error.png")
-            except Exception:
+                logger.info("📸 Đã lưu screenshot")
+            except:
                 pass
         return {"status": "error", "message": str(e)}
     finally:
         if browser is not None:
             try:
                 await browser.close()
-            except Exception:
+            except:
                 pass
 
 
@@ -216,11 +215,9 @@ async def get_cookies() -> dict:
 def index():
     return "Cookie Sync Service is running!", 200
 
-
 @app.route("/health")
 def health():
     return jsonify({"status": "healthy"})
-
 
 @app.route("/run_container", methods=["POST"])
 def run():
@@ -236,7 +233,6 @@ def run():
         loop.close()
     logger.info(f"📤 Response: {result}")
     return jsonify(result)
-
 
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 8080))
