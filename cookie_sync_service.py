@@ -19,13 +19,14 @@ COOKIE_FILE = os.getenv("COOKIE_FILE", "/app/cookies.txt")
 
 async def get_cookies() -> dict:
     """Lấy cookie YouTube bằng Playwright."""
+    logger.info("🚀 Bắt đầu lấy cookie")
+    logger.info(f"📧 EMAIL: {EMAIL}")
+    logger.info(f"📁 COOKIE_FILE: {COOKIE_FILE}")
+    
     browser = None
     page = None
     try:
         async with async_playwright() as p:
-            # QUAN TRỌNG: headless=True — container server (Railway) KHÔNG có
-            # display/GUI, headless=False sẽ crash launch() ngay lập tức.
-            # Đây là nguyên nhân chính khiến service fail hoàn toàn trước đây.
             browser = await p.chromium.launch(
                 headless=True,
                 args=[
@@ -43,7 +44,6 @@ async def get_cookies() -> dict:
                 viewport={"width": 1920, "height": 1080},
                 locale="en-US",
             )
-            # Xoá dấu vết webdriver — giảm khả năng bị Google chặn ngay từ vòng đầu
             await context.add_init_script(
                 "Object.defineProperty(navigator, 'webdriver', {get: () => undefined});"
             )
@@ -52,63 +52,88 @@ async def get_cookies() -> dict:
             if not EMAIL or not PASSWORD:
                 return {"status": "error", "message": "Thiếu EMAIL hoặc PASSWORD trong env vars"}
 
-            # ── Đăng nhập ────────────────────────────────────────────────────
+            logger.info("📤 Đang truy cập YouTube...")
             await page.goto("https://www.youtube.com/", wait_until="networkidle", timeout=30000)
             await page.wait_for_timeout(1500)
 
-            # Nút "Sign in" — thử vài selector, không dừng cứng nếu 1 cái fail
+            # Nút "Sign in"
             signed_in_button_found = False
             for sel in ('text="Sign in"', 'a[aria-label="Sign in"]', 'a[href*="accounts.google.com"]'):
                 try:
                     await page.click(sel, timeout=5000)
                     signed_in_button_found = True
+                    logger.info(f"✅ Đã click Sign in với selector: {sel}")
                     break
                 except Exception:
                     continue
             if not signed_in_button_found:
+                logger.warning("⚠️ Không tìm thấy nút Sign in, chuyển sang accounts.google.com")
                 await page.goto("https://accounts.google.com/login", timeout=30000)
             await page.wait_for_timeout(1500)
 
-            # Nhập email
-            try:
-                await page.wait_for_selector('input[type="email"]', timeout=10000)
-                await page.fill('input[type="email"]', EMAIL)
-            except Exception:
-                return {"status": "error", "message": "Không tìm thấy ô nhập email — Google có thể đã đổi giao diện"}
+            # Nhập email - nhiều selector
+            logger.info("📧 Đang nhập email...")
+            email_selectors = [
+                'input[type="email"]',
+                'input[name="identifier"]',
+                'input[aria-label*="Email"]',
+                'input[aria-label*="email"]',
+                '#identifierId'
+            ]
+            email_found = False
+            for sel in email_selectors:
+                try:
+                    await page.wait_for_selector(sel, timeout=3000)
+                    await page.fill(sel, EMAIL)
+                    email_found = True
+                    logger.info(f"✅ Đã nhập email với selector: {sel}")
+                    break
+                except:
+                    continue
+            if not email_found:
+                return {"status": "error", "message": "Không tìm thấy ô nhập email"}
 
             for sel in ('text="Next"', "#identifierNext"):
                 try:
                     await page.click(sel, timeout=5000)
+                    logger.info(f"✅ Đã click Next email với selector: {sel}")
                     break
                 except Exception:
                     continue
             await page.wait_for_timeout(2000)
 
-            # Nhập password
-            try:
-                await page.wait_for_selector('input[type="password"]', timeout=10000)
-                await page.fill('input[type="password"]', PASSWORD)
-            except Exception:
-                return {
-                    "status": "error",
-                    "message": "Không tìm thấy ô nhập password — có thể Google yêu cầu xác minh bổ sung (2FA/CAPTCHA)",
-                }
+            # Nhập password - nhiều selector
+            logger.info("🔑 Đang nhập password...")
+            pwd_selectors = [
+                'input[type="password"]',
+                'input[name="password"]',
+                'input[aria-label*="Password"]'
+            ]
+            pwd_found = False
+            for sel in pwd_selectors:
+                try:
+                    await page.wait_for_selector(sel, timeout=3000)
+                    await page.fill(sel, PASSWORD)
+                    pwd_found = True
+                    logger.info(f"✅ Đã nhập password với selector: {sel}")
+                    break
+                except:
+                    continue
+            if not pwd_found:
+                return {"status": "error", "message": "Không tìm thấy ô nhập password"}
 
             for sel in ('text="Next"', "#passwordNext"):
                 try:
                     await page.click(sel, timeout=5000)
+                    logger.info(f"✅ Đã click Next password với selector: {sel}")
                     break
                 except Exception:
                     continue
 
+            logger.info("⏳ Chờ đăng nhập...")
             await page.wait_for_timeout(5000)
 
-            # ── Phát hiện 2FA/CAPTCHA/xác minh bổ sung ──────────────────────
-            # QUAN TRỌNG: nếu Google yêu cầu xác minh mà script cứ lấy cookie
-            # bừa, cookie đó chỉ là session ẨN DANH (chưa đăng nhập thật) —
-            # dùng để bypass bot-check YouTube sẽ KHÔNG có tác dụng gì, và
-            # lỗi "Sign in to confirm you're not a bot" trên bot nhạc sẽ vẫn
-            # tiếp diễn y hệt dù cookie "sync thành công".
+            # Phát hiện 2FA/CAPTCHA
             current_url = page.url
             page_text = ""
             try:
@@ -124,36 +149,34 @@ async def get_cookies() -> dict:
                 "captcha",
             ]
             if any(sig in current_url.lower() or sig in page_text for sig in verification_signals):
-                logger.warning("⚠️ Google yêu cầu xác minh bổ sung (2FA/CAPTCHA) — cookie sẽ KHÔNG hợp lệ")
+                logger.warning("⚠️ Google yêu cầu xác minh bổ sung (2FA/CAPTCHA)")
                 return {
                     "status": "error",
-                    "message": (
-                        "Google yêu cầu xác minh bổ sung (2FA/CAPTCHA/unusual activity). "
-                        "Tài khoản này có thể đã bị Google đánh dấu do đăng nhập tự động lặp lại. "
-                        "Cần đăng nhập thủ công 1 lần trên trình duyệt thật để gỡ cảnh báo trước khi thử lại."
-                    ),
+                    "message": "Google yêu cầu xác minh bổ sung (2FA/CAPTCHA/unusual activity)"
                 }
 
-            # Xử lý popup đồng ý (nếu có) — không bắt buộc phải thành công
+            # Xử lý popup
             for sel in ('text="I agree"', 'text="Accept all"'):
                 try:
                     await page.click(sel, timeout=3000)
+                    logger.info(f"✅ Đã click popup: {sel}")
                 except Exception:
                     pass
 
             await page.goto("https://www.youtube.com/", wait_until="networkidle", timeout=30000)
             await page.wait_for_timeout(2000)
 
-            # ── Lấy cookie ───────────────────────────────────────────────────
+            # Lấy cookie
             cookies = await context.cookies()
+            logger.info(f"🍪 Lấy được {len(cookies)} cookies")
+            
             if not cookies:
-                return {"status": "error", "message": "Không lấy được cookie nào (danh sách rỗng)"}
+                return {"status": "error", "message": "Không lấy được cookie nào"}
 
-            # Kiểm tra có cookie đăng nhập thật không (vd SID/SAPISID là dấu
-            # hiệu đã login) — tránh lưu cookie ẩn danh tưởng là thành công.
+            # Kiểm tra cookie đăng nhập
             cookie_names = {c.get("name", "") for c in cookies}
             if not ({"SID", "SAPISID", "__Secure-3PSID"} & cookie_names):
-                logger.warning("⚠️ Không thấy cookie đăng nhập (SID/SAPISID) — có thể login chưa thành công")
+                logger.warning("⚠️ Không thấy cookie đăng nhập (SID/SAPISID)")
 
             netscape = "# Netscape HTTP Cookie File\n"
             for c in cookies:
@@ -174,7 +197,6 @@ async def get_cookies() -> dict:
 
     except Exception as e:
         logger.error(f"❌ Error: {e}")
-        # Chụp ảnh màn hình để debug nếu có thể (không chặn response)
         if page is not None:
             try:
                 await page.screenshot(path="/tmp/cookie_sync_error.png")
@@ -202,17 +224,17 @@ def health():
 
 @app.route("/run_container", methods=["POST"])
 def run():
+    logger.info("📨 Nhận request POST /run_container")
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     try:
         result = loop.run_until_complete(get_cookies())
     except Exception as e:
-        # Bọc thêm 1 lớp phòng hờ — đảm bảo route LUÔN trả JSON, không bao giờ
-        # để lộ lỗi 500 thô ra ngoài (bot gọi service này cần parse JSON được).
-        logger.error(f"❌ Unhandled error in /run_container: {e}")
+        logger.error(f"❌ Unhandled error: {e}")
         result = {"status": "error", "message": str(e)}
     finally:
         loop.close()
+    logger.info(f"📤 Response: {result}")
     return jsonify(result)
 
 
